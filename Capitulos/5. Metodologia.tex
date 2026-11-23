@@ -1,0 +1,106 @@
+\section{METODOLOGÍA}
+
+El pipeline propuesto se muestra en la Figura~\ref{fig:arquitectura}. Recibe como entrada una URL y, cuando el sitio está accesible, extrae características, calcula la importancia promedio de esas características con tres modelos de boosting, conserva solo las más relevantes, y las pasa a un stacking de dos niveles cuya salida final viene acompañada de una explicación generada con SHAP.
+
+\begin{figure}[t]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+    node distance=0.55cm,
+    every node/.style={font=\small},
+    box/.style={
+        rectangle, rounded corners=3pt, draw, thick,
+        text width=4.6cm, align=center, minimum height=1cm,
+        inner sep=6pt
+    },
+    boxsmall/.style={
+        rectangle, rounded corners=3pt, draw, thick,
+        text width=3.0cm, align=center, minimum height=1cm,
+        inner sep=6pt
+    },
+    gray/.style={box, fill=gray!12, draw=gray!60!black},
+    teal/.style={box, fill=teal!10, draw=teal!70!black},
+    purple/.style={boxsmall, fill=violet!10, draw=violet!70!black},
+    coral/.style={box, fill=orange!12, draw=orange!70!black},
+    arrow/.style={-{Latex[length=2.2mm]}, thick}
+]
+
+% --- Nodos ---
+\node[gray] (input) {\textbf{Entrada}\\ URL, y HTML si el sitio es accesible};
+
+\node[teal, below=of input] (features)
+    {\textbf{Extracción de características}\\ Rasgos léxicos, de dominio y de contenido};
+
+\node[teal, below=of features] (importance)
+    {\textbf{Cálculo de importancia}\\ XGBoost, LightGBM, RF};
+
+\node[teal, below=of importance] (selection)
+    {\textbf{Selección de variables}\\ Conserva las más relevantes};
+
+\node[purple, below=1.5cm of selection, xshift=-2.0cm] (xgb1)
+    {\textbf{XGBoost (capa 1)}\\ Prob.\ de phishing};
+
+\node[purple, below=1.5cm of selection, xshift=2.0cm] (rf1)
+    {\textbf{Random Forest (capa 1)}\\ Prob.\ de phishing};
+
+\node[coral, below=3.5cm of selection] (meta)
+    {\textbf{XGBoost meta-clasificador (capa 2)}\\ Combina ambas probabilidades};
+
+\node[gray, below=of meta] (output)
+    {\textbf{Predicción final + explicación SHAP}\\ Explicación por características};
+
+% --- Flechas ---
+\draw[arrow] (input) -- (features);
+\draw[arrow] (features) -- (importance);
+\draw[arrow] (importance) -- (selection);
+
+\draw[arrow] (selection.south) -- ++(0,-0.4) -| (xgb1.north);
+\draw[arrow] (selection.south) -- ++(0,-0.4) -| (rf1.north);
+
+\coordinate (merge) at ($(meta.north)+(0,0.4)$);
+\draw[thick] (xgb1.south) -- (xgb1.south |- merge) -- (merge);
+\draw[thick] (rf1.south) -- (rf1.south |- merge) -- (merge);
+\draw[arrow] (merge) -- (meta.north);
+
+\draw[arrow] (meta) -- (output);
+
+\end{tikzpicture}}
+\caption{Arquitectura del modelo de stacking de dos niveles propuesto para la detección de phishing.}
+\label{fig:arquitectura}
+\end{figure}
+
+\subsection{Datos}
+
+Para entrenar el modelo se construirá un dataset a partir de URLs crudas, de modo que el agente reciba una dirección y no un vector de características ya calculado, como ocurre con el dataset de UCI \cite{alsariera2020ai}, que distribuye únicamente las variables. Las URLs de phishing se tomarán de feeds públicos como PhishTank y OpenPhish, y las legítimas de la lista Tranco \cite{lepochat2019tranco}, un ranking de sitios populares pensado para investigación y más difícil de manipular que el de Alexa, que dejó de existir en 2022. Estas fuentes de phishing, junto con un ranking de sitios populares para los legítimos, ya fueron usadas en \cite{duy2024study}. Se recolectará un número similar de URLs por clase, se eliminarán los duplicados y se registrará la fecha de captura de cada URL, porque los sitios de phishing tienen una vida corta y muchos dejan de estar disponibles pocas horas después de reportarse.
+
+Como Tranco solo lista dominios, las URLs legítimas se completarán con rutas internas tomadas de la página principal de cada sitio, para que el modelo no aprenda a asociar la presencia de una ruta con phishing. Al muestrear las clases en igual proporción no se espera necesitar balanceo, si aun así quedara desbalance, se aplicará sobremuestreo aleatorio (ROS) solo sobre las particiones de entrenamiento, siguiendo el procedimiento de \cite{kalabarige2022multilayer}. Como los trabajos \cite{kalabarige2022multilayer}, \cite{kalabarige2023boosting} y \cite{alsariera2020ai} usan otros conjuntos de datos, sus exactitudes no son directamente comparables con las de este proyecto. Por eso la comparación con ellos será cualitativa, y la cuantitativa se hará contra los clasificadores base entrenados sobre este mismo dataset.
+
+\subsection{Extracción de características}
+
+De la URL se extraen rasgos léxicos y de dominio como la longitud total, número de puntos, presencia de una dirección IP en lugar de un nombre de dominio, uso del carácter ```@' o de guiones, uso de HTTPS y edad de registro del dominio cuando esté disponible. Cuando el sitio sea accesible, se suman elementos del HTML como la presencia de formularios de inicio de sesión, número y origen de scripts embebidos, y enlaces externos. Como las características se calculan directamente desde las URLs del dataset, el mismo código de extracción sirve en el entrenamiento y en la predicción sobre una URL nueva, lo que evita el desajuste entre ambos. Dado que muchos sitios de phishing ya no están en línea cuando se intenta descargarlos, el HTML se descargará en el momento de recolectar cada URL, y las características que no puedan calcularse (HTML o WHOIS no disponibles) se codificarán con un valor centinela, para que el modelo aprenda a trabajar también con URLs de las que solo se conoce la dirección. Este conjunto de características es deliberadamente más reducido que el de trabajos como \cite{kalabarige2023boosting}, que llega a manejar 111 variables; la apuesta aquí es que un conjunto más chico, bien seleccionado, sea suficiente para un agente que necesita responder rápido sobre una URL nueva.
+
+\subsection{Selección de características por importancia promedio}
+
+Sobre el conjunto de características extraídas se entrenan tres modelos XGBoost, LightGBM y Random Forest, con el único propósito de obtener la importancia que cada uno asigna a cada variable. Siguiendo el esquema de \cite{kalabarige2023boosting}, esa importancia se promedia entre los tres modelos:
+
+\begin{equation*}
+AVG_{F_i} = \frac{1}{3} \sum_{j=1}^{3} RF_{i}^{j}
+\end{equation*}
+
+Donde $RF_{i}^{j}$ es la importancia de la característica $i$ según el modelo $j$. Las características se ordenan por ese promedio y se conservan las $K$ de mayor puntaje; el valor de $K$ se determinará experimentalmente, evaluando la exactitud del modelo final en un rango de valores (por ejemplo, reteniendo entre el 60\% y el 90\% del total de variables) y quedándose con el punto donde la exactitud deja de mejorar de forma apreciable.
+
+\subsection{Arquitectura del modelo}
+
+El modelo final es un stacking de dos niveles, como se ve en la Figura~\ref{fig:arquitectura}. En la primera capa, XGBoost y Random Forest se entrenan en paralelo sobre las características seleccionadas, cada uno entrega, para una URL dada, la probabilidad de que sea phishing. Esas dos probabilidades, no las etiquetas finales, se concatenan y se usan como entrada de un segundo XGBoost, más simple, que actúa como meta clasificador y entrega la predicción final. Esta arquitectura usa una capa menos que las tres de BMLSELM \cite{kalabarige2023boosting}, apostando a que dos modelos bien diferenciados en cómo cometen errores, uno basado en boosting secuencial, otro en promediado de árboles independientes, aportan suficiente diversidad sin necesitar una tercera capa intermedia.
+
+\subsection{Entrenamiento y validación}
+
+El entrenamiento se hará con validación cruzada de 10 particiones, siguiendo el esquema usado en \cite{alsariera2020ai}, donde los datos se dividen en diez grupos, se entrena sobre nueve y se prueba sobre el restante, repitiendo el proceso diez veces para que cada partición sirva de test exactamente una vez. A diferencia de \cite{alsariera2020ai}, las particiones se construirán agrupando las URLs por dominio, de modo que URLs de un mismo dominio no queden a la vez en entrenamiento y en prueba, pues de lo contrario el modelo podría memorizar dominios y sobrestimar su capacidad de generalizar a sitios nuevos. Por la misma razón, la selección de características y el balanceo se calcularán únicamente con la partición de entrenamiento de cada iteración. Los hiperparámetros de cada modelo (profundidad máxima de los árboles, tasa de aprendizaje, número de estimadores) se ajustarán mediante búsqueda en grilla sobre el conjunto de entrenamiento, evitando así que la selección de hiperparámetros contamine la evaluación final.
+
+\subsection{Explicabilidad}
+
+Sobre el meta clasificador final se aplicará SHAP para generar dos tipos de explicación, una explicación global, que muestra qué características pesan más en promedio sobre todo el dataset, y una explicación local, que para una URL puntual muestra qué características empujaron la decisión hacia ``phishing'' o ``legítimo'' y en qué magnitud. Esta segunda es la que responde directamente al objetivo de que la evaluación de riesgo venga acompañada de una justificación.
+
+\subsection{Evaluación}
+
+El desempeño del modelo se medirá con las métricas estándar de la literatura revisada correspondientes a exactitud, precisión, recall, F1-score y tasa de falsos positivos, siguiendo las definiciones usadas en \cite{kalabarige2023boosting} y \cite{alsariera2020ai}. Además de reportar estas métricas para el stacking completo, se entrenará cada clasificador base (XGBoost solo, Random Forest solo) de forma aislada sobre el mismo conjunto de datos, para poder mostrar cuánto aporta realmente la arquitectura de dos capas frente a usar un solo modelo. Finalmente, como una primera aproximación a la robustez del agente, inspirada en el trabajo de Duy \cite{duy2024study}, se probará el modelo contra un pequeño conjunto de URLs modificadas manualmente para imitar técnicas de evasión simples (cambios menores en el dominio, uso de acortadores de URL, subdominios adicionales), con el fin de reportar de forma honesta qué tan fácil es engañar al agente, sin llegar a implementar un framework de generación adversaria completo como el de ese trabajo.

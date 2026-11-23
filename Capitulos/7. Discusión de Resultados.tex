@@ -1,0 +1,172 @@
+\section{Discusión de Resultados}
+
+Esta sección compara el agente con los trabajos revisados anteriormente, en cinco aspectos las condiciones experimentales, las técnicas y algoritmos, los resultados numéricos, el costo computacional junto con la explicabilidad, y la robustez frente a evasión. Una advertencia condiciona todo el análisis y es que ningún par de cifras es directamente comparable. Los trabajos \cite{kalabarige2022multilayer},\cite{kalabarige2023boosting},\cite{alsariera2020ai} se evalúan sobre datasets públicos cuyas características ya vienen calculadas, mientras que este proyecto construye su propio dataset a partir de URLs crudas. En cada comparación se indica qué parte de la diferencia puede atribuirse al modelo y cuál a los datos.
+
+\subsection{Resultados obtenidos}
+
+El dataset final tiene 19.989 URLs (10.000 de phishing y 9.989 legítimas) repartidas en 18.058 dominios. Casi todos los enlaces de phishing salieron de Phishing.Database (789.054 enlaces en la lista; OpenPhish aportó 300) y las URLs legítimas, de Tranco \cite{lepochat2019tranco}. Se apartó el 20\% de los dominios como prueba final (4.023 URLs) y las 15.966 restantes se usaron para ajustar hiperparámetros y elegir K. La búsqueda en grilla dejó XGBoost con 400 árboles, profundidad 6 y tasa de aprendizaje 0,05; Random Forest con 200 árboles y al menos 3 muestras por hoja; y un meta-clasificador de 30 árboles con profundidad 3. En la validación cruzada de 10 particiones la F1 del stacking casi no cambió al usar 17, 20, 23 o 26 variables (varió menos de 0,0015), de modo que se eligió K\,=\,0,6, es decir, 17 de las 29 variables. El experimento completo tomó 21,2 minutos en un runtime de Colab con 2 CPU y 13,6 GB de RAM. \newline
+
+La Tabla~\ref{tab:resultados} resume el desempeño. El stacking obtiene la mejor exactitud y F1 en la prueba final, pero la diferencia con XGBoost solo es de 0,20 puntos porcentuales. Con 4.023 URLs el error estándar de una exactitud cercana a 0,91 es de 0,45 puntos (intervalo de confianza del 95\% de aproximadamente $\pm$0,9), y el de la diferencia entre dos modelos independientes, de unos 0,63 puntos. Es decir, la diferencia no se distingue del azar. No se aplicó una prueba pareada (por ejemplo, McNemar), que sería el siguiente paso para confirmarlo.
+
+\begin{table}[t]
+\caption{Desempeño de los modelos. Validación cruzada (10 particiones agrupadas por dominio, K\,=\,0,6, media) y prueba final (4.023 URLs apartadas).}
+\label{tab:resultados}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2.4pt}
+\begin{tabular}{lcccccc}
+\hline
+\textbf{Modelo} & \textbf{Exact.} & \textbf{Prec.} & \textbf{Recall} & \textbf{F1} & \textbf{FPR} & \textbf{AUC}\\
+\hline
+\multicolumn{7}{l}{\textit{Validación cruzada (15,966 URLs)}}\\
+Stacking      & 0,9099 & 0,9249 & 0,8923 & 0,9083 & 0,0725 & 0,9678\\
+XGBoost       & 0,9090 & 0,9269 & 0,8880 & 0,9070 & 0,0700 & 0,9681\\
+Random Forest & 0,9058 & 0,9152 & 0,8944 & 0,9047 & 0,0829 & 0,9637\\
+\hline
+\multicolumn{7}{l}{\textit{Prueba final (4,023 URLs)}}\\
+Stacking      & 0,9123 & 0,9220 & 0,9014 & 0,9116 & 0,0768 & 0,9668\\
+XGBoost       & 0,9103 & 0,9225 & 0,8965 & 0,9093 & 0,0758 & 0,9671\\
+Random Forest & 0,9036 & 0,9117 & 0,8945 & 0,9030 & 0,0873 & 0,9634\\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Condiciones experimentales y comparabilidad}
+
+La Tabla~\ref{tab:literatura} reúne los datos y resultados de los trabajos revisados. Cuatro diferencias impiden leer las exactitudes de una columna contra otra. \newline
+
+La primera es el origen de los datos. Los trabajos \cite{kalabarige2022multilayer},\cite{kalabarige2023boosting},\cite{alsariera2020ai} usan el dataset de UCI y las variantes de Mendeley, que se distribuyen con las características ya calculadas. Según \cite{alsariera2020ai}, 7 de las 30 características de UCI son de dominio, y entre ellas hay señales que dependen de servicios externos (en la documentación del dataset, el tráfico web y el PageRank). Algunos trabajos tratan esa dependencia de forma explícita, pues \cite{sahingoz2019machine} destaca que su sistema es independiente de servicios de terceros, y \cite{rao2019detection} evalúa su modelo con y sin ellos. En este proyecto las características salen de la URL, del HTML y de WHOIS, y esas señales externas no están disponibles. Además, en los datasets públicos las características se calcularon cuando los sitios estaban activos, mientras que aquí el 79,2\% de las URLs de phishing no devolvió HTML y el 64,0\% no devolvió datos de WHOIS. \newline
+
+La segunda es el esquema de evaluación, pues \cite{alsariera2020ai} usa validación cruzada de 10 particiones aleatorias, y \cite{kalabarige2022multilayer,kalabarige2023boosting} no especifican la partición en el texto. Agrupar por dominio, como se hace aquí, tiene un efecto limitado en este dataset, porque hay 18.058 dominios para 19.989 URLs; por eso no explica por sí sola la diferencia de exactitud. Sí importa en otro punto, ya que en \cite{kalabarige2022multilayer} se describe el sobremuestreo aleatorio sobre el dataset completo y no aclara si ocurre antes o después de separar la prueba. Si fuera antes, copias de una misma fila quedarían en entrenamiento y en prueba, y la exactitud se inflaría. Con la información publicada no se puede saber. Este proyecto no necesitó balanceo, pues las clases quedaron casi iguales. \newline
+
+La tercera es el conjunto de características, 29 aquí (17 tras la selección) frente a 30, 48 o 111 en los datasets públicos. \newline
+
+La cuarta es el tamaño, 19.989 URLs, frente a unas 3.500 páginas en \cite{rao2019detection}, 11.055 en UCI o hasta 88.647 en las variantes de Mendeley de \cite{kalabarige2022multilayer}. \newline
+
+El trabajo más cercano en condiciones es \cite{duy2024study}, ya que construye su dataset de sitios (23.960) con OpenPhish, PhishTank y Alexa, y sus clasificadores de sitios alcanzan entre 92,66\% y 94,58\% de exactitud (incluidos los que usan solo la URL), frente al 91,23\% de este proyecto. La revisión \cite{ahmad2025across} muestra el mismo patrón en general, donde las exactitudes de los modelos que compara van de 89\% a 99,6\%, y el valor depende en buena medida del dataset.
+
+\begin{table*}[t]
+\caption{Datos, evaluación y resultados reportados por los trabajos revisados. n.d.: no verificado (solo se consultó el resumen). Las exactitudes son las que cada trabajo reporta sobre sus propios datos.}
+\label{tab:literatura}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{1.1cm} p{3.6cm} p{4.3cm} p{2.8cm} p{3.4cm}}
+\hline
+\textbf{Trabajo} & \textbf{Técnica principal} & \textbf{Datos y características} & \textbf{Evaluación} & \textbf{Exactitud reportada}\\
+\hline
+\cite{sahingoz2019machine} & Random Forest con características léxicas y de PLN & Más de 70.000 URLs; solo la URL, sin servicios de terceros & n.d. & 97,98\%\\
+\cite{rao2019detection} & Random Forest y bosques oblicuos (PCA-RF) & Unas 3.500 páginas; URL, código fuente y servicios de terceros & n.d. & 99,31\% (RF); 99,55\% (PCA-RF)\\
+\cite{chiew2019hybrid} & Selección HEFS y Random Forest & De 48 a 10 características (20,8\%) & n.d. & 94,6\%\\
+\cite{zhu2019ofsnn} & Índice FVV y red neuronal & UCI, 23 de 30 características & n.d. & 94,5\% (valor tomado de \cite{kalabarige2023boosting})\\
+\cite{aljofey2020effective} & CNN a nivel de carácter & Solo la URL & n.d. & 95,02\% (propio); 98,58, 95,46 y 95,22\% (públicos)\\
+\cite{kalabarige2022multilayer} & Stacking de 3 capas (MLP, KNN, RF, LR, XGBoost) & UCI y Mendeley: 4 datasets (10.000 a 88.647 filas); sobremuestreo & No especifica & 96,79 a 98,90\%\\
+\cite{kalabarige2023boosting} & Stacking de boosting con selección de variables & Los mismos 4 datasets, con 66 a 86\% de las variables & No especifica & 96,18 a 98,80\%\\
+\cite{alsariera2020ai} & Extra-Trees con 4 meta-aprendices & UCI: 11.055 filas, 30 características & Validación cruzada de 10 particiones & 97,40 a 97,58\%\\
+\cite{duy2024study} & 15 modelos (ML, ensamble, DL, multimodal) & 23.960 sitios de OpenPhish, PhishTank y Alexa; 220.423 dominios & n.d. & Sitios: 92,66 a 94,58\%; dominios: 89,00 a 99,74\%\\
+\hline
+\textbf{Aquí} & Stacking de XGBoost y Random Forest con meta XGBoost & 19.989 URLs crudas; 29 características (17 elegidas) & Validación cruzada de 10 particiones agrupada por dominio y 20\% apartado & 90,99\% (validación cruzada); 91,23\% (prueba final)\\
+\hline
+\end{tabular}
+\end{table*}
+
+\subsection{Técnicas, algoritmos y modelos matemáticos}
+
+La Tabla~\ref{tab:tecnicas} compara las técnicas, los trabajos \cite{kalabarige2022multilayer}, \cite{kalabarige2023boosting},\cite{alsariera2020ai} y este proyecto comparten la idea de combinar árboles, pero cada uno usa una razón distinta para esperar una mejora. Random Forest promedia $B$ árboles entrenados sobre muestras distintas, $\hat{f}(x)=\frac{1}{B}\sum_{b=1}^{B} f_b(x)$, lo que reduce la varianza. Los métodos de boosting ajustan los árboles de forma secuencial y reducen el sesgo, donde AdaBoost combina clasificadores débiles con pesos $\alpha_m$, $H(x)=\mathrm{sign}\big(\sum_{m}\alpha_m h_m(x)\big)$, y XGBoost minimiza una función objetivo regularizada $\sum_i l(y_i,\hat{y}_i)+\sum_k \Omega(f_k)$ \cite{ahmad2025across}, por otro lado \cite{alsariera2020ai} fija un único algoritmo base (Extra-Trees) y varía la estrategia de combinación con remuestreo bootstrap en BET, reponderación de muestras en ABET, regresión logística aditiva en LBET y rotación por componentes principales en RoFBET. Mientras que en \cite{kalabarige2023boosting} se usa solo variantes de boosting, lo que reduce la diversidad entre modelos base. A su vez en \cite{kalabarige2022multilayer} se mezcla algoritmos de familias distintas (redes, vecinos, regresión y árboles), que es el caso con más diversidad. Este proyecto toma un punto intermedio con un modelo de boosting y uno de tipo bagging sobre las mismas variables, combinados por un meta-clasificador entrenado con predicciones fuera de muestra. Como ambos son ensambles de árboles que ven las mismas 17 variables, es plausible que sus errores se parezcan y que al meta-clasificador le quede poco por corregir. No se midió la correlación entre los errores, de modo que esto es una hipótesis y no un resultado. \newline
+
+En la selección de variables el esquema es el de \cite{kalabarige2023boosting}, con un ajuste. El promedio de importancias de ese trabajo es $AVG_{F_i}=\frac{1}{n}\sum_j RF_i^j$. Aquí cada vector de importancias se normaliza antes de promediar,
+\begin{equation}
+\widetilde{AVG}_{F_i}=\frac{1}{3}\sum_{j=1}^{3}\frac{RF_i^{j}}{\sum_{k}RF_k^{j}},
+\label{eq:avg}
+\end{equation}
+porque LightGBM devuelve por defecto el número de divisiones en que participa cada variable, y sin normalizar ese modelo dominaría el promedio. Frente a esto, en \cite{chiew2019hybrid} se deriva el subconjunto con un algoritmo de gradiente de la función de distribución acumulada y ensambles de perturbación de datos y de función, y en \cite{zhu2019ofsnn} se usa un índice de validez de las características (FVV). Ambos son más elaborados que fijar una fracción K por validación cruzada, y no hay evidencia aquí de que esa complejidad adicional compense, pues con tres modelos y un solo parámetro, la curva de F1 contra K resultó prácticamente plana. \newline
+
+Donde este proyecto se diferencia de los trabajos revisados en detalle es en la explicabilidad. Puesto que en \cite{alsariera2020ai} se declara que sus modelos son interpretables, pero no muestra explicaciones por muestra, y en \cite{kalabarige2022multilayer,kalabarige2023boosting,duy2024study} devuelven solo una etiqueta o una probabilidad. Aquí cada informe incluye las variables que más pesaron, calculadas con valores de Shapley:
+\begin{equation}
+\phi_i=\sum_{S\subseteq F\setminus\{i\}}\frac{|S|!\,(|F|-|S|-1)!}{|F|!}\Big[f_{S\cup\{i\}}(x)-f_S(x)\Big],
+\label{eq:shapley}
+\end{equation}
+con la propiedad de aditividad $\sum_i\phi_i=f(x)-E[f(X)]$: las contribuciones suman la diferencia entre la probabilidad de la URL y la probabilidad media del fondo. La contrapartida es que un modelo con variables diseñadas a mano depende de cómo se diseñaron, algo que en \cite{aljofey2020effective} se evita al aprender la representación directamente de los caracteres de la URL, a costa de perder la interpretación por variable. La sección sobre amenazas a la validez muestra que esa dependencia tuvo consecuencias aquí.
+
+\begin{table*}[t]
+\caption{Comparación de técnicas, selección de variables, fundamento matemático y explicabilidad. n.d.: no verificado (solo se consultó el resumen).}
+\label{tab:tecnicas}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{1.3cm} p{2.7cm} p{3.0cm} p{2.5cm} p{3.6cm} p{2.3cm}}
+\hline
+\textbf{Trabajo} & \textbf{Algoritmos base} & \textbf{Combinación} & \textbf{Selección de variables} & \textbf{Fundamento principal} & \textbf{Explicabilidad}\\
+\hline
+\cite{kalabarige2022multilayer} & MLP, KNN, RF, LR, XGBoost & Stacking de 3 capas; meta XGBoost & No & Meta-aprendizaje sobre las salidas de cada capa & No\\
+\cite{kalabarige2023boosting} & XGBoost, LightGBM, CatBoost, AdaBoost & Stacking de 3 capas solo de boosting & Importancia promedio; K de 66 a 86\% & $AVG_{F_i}=\frac{1}{n}\sum_j RF_i^j$ & No\\
+\cite{alsariera2020ai} & Extra-Trees & AdaBoost, Bagging, Rotation Forest, LogitBoost & No & Bootstrap, reponderación, regresión logística aditiva, rotación PCA & Declarada, sin explicaciones por muestra\\
+\cite{chiew2019hybrid}, \cite{zhu2019ofsnn} & Random Forest; red neuronal & --- & HEFS (gradiente de la CDF y ensambles de perturbación); índice FVV & Ranking de características con corte automático o por validez & n.d.\\
+\cite{aljofey2020effective} & CNN a nivel de carácter & --- & No (aprende la representación) & Convolución sobre la secuencia de caracteres de la URL & n.d.\\
+\cite{duy2024study} & 15 modelos de distintas familias & Atacados con WGAN; defensa por reentrenamiento & No & Pérdida de Wasserstein con recorte del crítico & No\\
+\hline
+\textbf{Aquí} & XGBoost y Random Forest (capa 1); XGBoost (meta) & Stacking de 2 niveles con predicciones fuera de muestra agrupadas por dominio & Importancia promedio normalizada (ec.~\ref{eq:avg}); K\,=\,0,6 & Boosting y bagging; valores de Shapley (ec.~\ref{eq:shapley}) & Sí, por URL (SHAP)\\
+\hline
+\end{tabular}
+\end{table*}
+
+\subsection{Comparación de resultados numéricos}
+
+\textbf{Exactitud:} \par 
+
+Con 91,23\% en la prueba final, el agente queda por debajo de los trabajos que usan datasets públicos (96,18 a 98,90\% en \cite{kalabarige2022multilayer,kalabarige2023boosting}, 97,40 a 97,58\% en \cite{alsariera2020ai}, 97,98\% en \cite{sahingoz2019machine}, 99,31\% en \cite{rao2019detection}). También queda entre 1,4 y 3,4 puntos por debajo de los clasificadores de sitios de \cite{duy2024study}, y esos incluyen tres modelos que usan solo la URL. Los resultados de \cite{chiew2019hybrid} (94,6\%), \cite{zhu2019ofsnn} (94,5\%) y \cite{aljofey2020effective} (95,02\% en su propio dataset, con solo la URL) también están por encima, aunque con menos margen. Dentro del rango de 89 a 99,6\% que muestra \cite{ahmad2025across}, el resultado cae en la parte baja. No hay una forma de repartir con exactitud la diferencia entre el modelo y los datos, pero la comparación con \cite{duy2024study}, donde las condiciones son parecidas, sugiere que la mayor parte viene de los datos, los datasets recolectados de fuentes activas producen cifras de 92 a 95\%, y los benchmarks con características curadas, de 96 a 99\%. \newline
+
+\textbf{Tipo de error:} \par 
+La tasa de falsos positivos es de 7,68\% (error estándar de 0,6 puntos), y el recall, de 90,14\%. En \cite{alsariera2020ai}, según sus tablas, los falsos positivos están entre 1,6 y 1,9\% y el recall entre 96,2 y 96,7\% (uno menos la tasa de falsos negativos). Dos trabajos que \cite{duy2024study} menciona reportan tasas de falsos positivos de 0,25\% y 0,59\%. Una de cada 13 URLs legítimas termina marcada como phishing, lo que haría poco usable al agente tal como está. El AUC de 0,967 indica que hay margen para mover el umbral de decisión y cambiar recall por menos falsos positivos, pero esa curva no se calculó. \newline
+
+\textbf{Stacking frente a modelos individuales:} \par
+La ganancia del stacking sobre XGBoost afinado es de 0,09 puntos en validación cruzada y 0,20 en la prueba final, dentro del error de medición. En \cite{kalabarige2023boosting} la ganancia sobre XGBoost con todas las variables va de 0,05 a 0,42 puntos según el dataset, un orden de magnitud parecido. En \cite{kalabarige2022multilayer} es mayor, de 0,20 a 1,08 puntos sobre el mejor modelo individual con las clases balanceadas y de 2,05 a 3,80 puntos sobre XGBoost sin balanceo. La brecha entre ambos trabajos sugiere que la ventaja del stacking depende de qué tan fuerte sea el modelo individual con el que se compara. Aquí XGBoost se ajustó con búsqueda en grilla, y con una línea base fuerte el beneficio casi desaparece. Para decidir si compensa el costo de entrenar tres modelos en lugar de uno, la evidencia disponible no alcanza para justificar el stacking. \newline
+
+\textbf{Random Forest:} \par
+Es el modelo individual más débil aquí (0,9036 de exactitud, 0,67 puntos por debajo de XGBoost), mientras que \cite{rao2019detection} lo reporta como el mejor y \cite{ahmad2025across} lo recomienda tras comparar modelos. Esa recomendación se apoya en cifras de datasets distintos, no en una comparación sobre los mismos datos, y en este dataset, con variables numéricas de URL y 20.000 filas, el boosting aprovecha mejor las interacciones entre variables. \newline
+
+\textbf{Selección de variables:} \par 
+Reducir de 23 a 17 variables no costó nada medible, lo que coincide con \cite{kalabarige2023boosting} (96,06 a 98,80\% con selección frente a 96,13 a 98,95\% sin ella en sus cuatro datasets) y con \cite{chiew2019hybrid}, que logra 94,6\% con solo el 20,8\% de las variables. La reducción aquí es menos agresiva (58,6\%). El promedio de importancias descartó variables binarias raras, como el uso de una dirección IP en lugar de un dominio (presente en el 1,8\% de las URLs de phishing y en ninguna legítima), que pueden ser decisivas en los pocos casos en que aparecen aunque su importancia media sea baja.\newline
+
+\textbf{Qué señales pesan:} \par
+Según SHAP, las cinco variables más importantes suman el 59,6\% de la importancia total: \texttt{uses\_https}, \texttt{num\_subdomains}, \texttt{digit\_ratio}, \texttt{path\_length} y \texttt{url\_length}. Las tres variables de contenido que quedaron entre las 17 (\texttt{num\_links}, \texttt{num\_scripts} y \texttt{has\_login\_form}) aportan el 5,9\%, y la de WHOIS (\texttt{domain\_age\_days}) ocupa el séptimo lugar. Es decir, el modelo funciona casi como un detector basado en la URL. Eso es coherente con \cite{sahingoz2019machine} y \cite{aljofey2020effective}, que alcanzan 95 a 98\% con solo la URL, pero significa que el componente de contenido, que era parte de la propuesta, casi no contribuye, algo esperable con el 80\% de las filas sin HTML.
+
+\subsection{Costo computacional y explicabilidad}
+
+El experimento completo (ajuste de hiperparámetros, validación cruzada con 4 valores de K y 3 modelos, y entrenamiento final) tomó 21,2 minutos en 2 CPU. Ninguno de \cite{kalabarige2022multilayer},\cite{kalabarige2023boosting},\cite{alsariera2020ai} reporta tiempos de entrenamiento, así que no hay referencia directa. Para una URL nueva, los tiempos medios medidos sobre 20 URLs de prueba fueron de 1,49 s para la descarga y WHOIS (mediana de 0,66 s, máximo de 6,79 s), 0,027 s para extraer las características, 0,061 s para la predicción y 1,25 s para la explicación. La predicción del modelo es, por tanto, la etapa más barata, y la explicación con SHAP cuesta unas 21 veces más que ella y casi iguala al tiempo de red, un análisis completo toma 2,83 s en promedio, frente a 1,58 s sin explicación. En \cite{duy2024study} se mide solo la predicción por lote de 1.000 sitios, con unos 1,1 ms por sitio para Fusion-CNN, 145 ms para Shark-Eyes y 238 ms para un modelo multimodal que usa URL, contenido y JavaScript; frente a esas cifras, los 61 ms de este modelo quedan por debajo de los dos multimodales y muy por encima de Fusion-CNN. El hardware y el método de medición difieren, por lo que sirven solo como orden de magnitud. El costo del agente es sobre todo de red y de explicación, no de modelo.
+
+\subsection{Robustez frente a evasión}
+
+La Tabla~\ref{tab:evasion} muestra qué fracción de 500 URLs de phishing, tomadas de las unas 1.820 que el modelo detecta sin modificar, sigue detectándose tras cada variante. Estas cifras no deben leerse como evidencia de robustez. Tres de las cinco variantes (subdominio extra, parámetros largos, dominio con caracteres cambiados) agregan señales que el modelo asocia con phishing, más subdominios, URLs más largas, más dígitos. Que se detecten casi todas era lo esperable. Las dos variantes que sí quitan señales son las más informativas, forzar HTTPS baja la detección al 95,4\%, y el acortador simulado, que deja la URL sin HTML ni WHOIS, al 90,4\%. La primera confirma que el modelo se apoya mucho en \texttt{uses\_https}, una característica que un atacante controla sin costo. \newline
+
+\begin{table}[t]
+\caption{Tasa de detección tras modificar 500 URLs de phishing ya detectadas. El acortador es una simulación (la URL queda sin HTML ni WHOIS).}
+\label{tab:evasion}
+\centering
+\footnotesize
+\begin{tabular}{lc}
+\hline
+\textbf{Variante} & \textbf{Tasa de detección}\\
+\hline
+Subdominio extra     & 1,000\\
+Parámetros largos    & 0,996\\
+Dominio con caracteres cambiados & 0,992\\
+HTTPS forzado        & 0,954\\
+Acortador simulado   & 0,904\\
+\hline
+\end{tabular}
+\end{table}
+
+Tampoco son comparables con \cite{duy2024study}, pues ahí un generador adversario produce dominios y solo se conservan los que logran pasar por un clasificador, de modo que el ataque está optimizado contra el detector; con esos ejemplos, el SVM detectó entre 10,02 y 13,67\% y XGBoost entre 19,24 y 38,32\% de los dominios, mientras que los modelos multimodales mantuvieron entre 95 y 99\%. Esa resistencia viene de que los modelos multimodales no dependen solo de la URL manipulada. El agente de este proyecto depende casi por completo de ella (94,1\% de la importancia está en variables de URL y dominio), de modo que su perfil es más parecido al de los modelos que usan solo la URL y que \cite{duy2024study} muestra como vulnerables (por ejemplo, entre 12 y 30\% de detección en Eman-CNN). La defensa que ese trabajo propone, reentrenar con ejemplos adversarios seleccionados, queda como trabajo futuro.
+
+\subsection{Hallazgos que matizan los resultados}
+
+La prueba del agente con una URL conocida mostró un problema que las métricas de la Tabla~\ref{tab:resultados} no revelan. \texttt{https://www.wikipedia.org/} fue clasificada como phishing con probabilidad 0,89 y riesgo alto. Los factores principales fueron \texttt{num\_subdomains} (+0.31, porque \texttt{www} cuenta como subdominio) y \texttt{path\_length} (+0.21, por la ruta \texttt{/}). Las URLs legítimas de este dataset salen de Tranco, que lista dominios sin \texttt{www}, y se construyeron como \texttt{https://dominio/}; las de phishing, en cambio, suelen incluir \texttt{www}. Los promedios por clase lo confirman en parte, pues \texttt{num\_subdomains} es 0,21 en legítimas y 0,57 en phishing, y \texttt{uses\_https} es 0,998 frente a 0,734. Esas dos variables son la primera y la segunda en importancia, y juntas suman el 29\% de la importancia total. Una parte de lo que el modelo aprendió es, por lo tanto, un artefacto de cómo se construyó la clase legítima, y como el mismo artefacto está en entrenamiento y en prueba, la exactitud de 91,23\% probablemente sobrestima el desempeño con URLs reales. Los trabajos con datasets curados \cite{kalabarige2022multilayer},\cite{kalabarige2023boosting},\cite{alsariera2020ai} no tienen este problema exacto, aunque tienen los suyos, y \cite{ahmad2025across} advierte que los modelos quedan atados al dataset con que se entrenaron. \newline
+
+Hay otras limitaciones, como la igualación de valores faltantes entre clases que evita que el modelo aprenda que ``sin HTML'' significa phishing, pero no se midió su efecto con una comparación sin igualar. Las URLs se capturaron el mismo día, así que no se evalúa la generalización a sitios que aparecen después. Las URLs de phishing provienen casi todas de una sola fuente, y el desempeño por fuente no se separó. Las pruebas de evasión son simples y no adaptativas, y no se calcularon intervalos de confianza por bootstrap ni pruebas pareadas.
+
+\subsection{Síntesis}
+
+La comparación deja cuatro conclusiones. Primero, la exactitud de 91,2\% es menor que la de los benchmarks (96 a 99\%) y se parece a la de los trabajos que construyen su dataset con fuentes activas (92 a 95\%), por lo que la diferencia viene sobre todo de los datos y no solo del modelo. Segundo, el stacking no mejora de forma apreciable a XGBoost bien ajustado, en línea con las ganancias pequeñas que reporta \cite{kalabarige2023boosting}. Tercero, reducir las variables a poco más de la mitad no cuesta exactitud, como en \cite{kalabarige2023boosting} y \cite{chiew2019hybrid}, y el agente ofrece algo que no muestra ninguno de los trabajos revisados en detalle \cite{kalabarige2022multilayer},\cite{kalabarige2023boosting},\cite{alsariera2020ai},\cite{duy2024study}, una explicación por URL. Cuarto, el modelo depende de señales de URL que el atacante controla y de artefactos de la construcción del dataset, lo que limita lo que se puede afirmar sobre su robustez y sobre su uso con URLs reales. Corregir esos artefactos (quitar \texttt{www} del conteo de subdominios, muestrear el esquema de las legítimas según su frecuencia real) y volver a evaluar es el paso siguiente más útil.

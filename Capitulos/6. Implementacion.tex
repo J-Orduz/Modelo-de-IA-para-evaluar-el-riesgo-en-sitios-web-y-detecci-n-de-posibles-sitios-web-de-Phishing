@@ -1,0 +1,233 @@
+\subsection{Implementación}
+
+El diseño anterior se implementa en un único notebook de Google Colab escrito en Python. Cada clase de la Figura~\ref{fig:clases} vive en su propia celda y se define una sola vez, de modo que se usa igual al entrenar y al analizar una URL nueva. A continuación se describen el entorno y las librerías, la correspondencia entre el diseño y el notebook, el entrenamiento y el guardado del modelo, la extracción de características en tiempo de ejecución, la explicabilidad con SHAP y las limitaciones que impone trabajar en Colab. Los fragmentos de código están recortados, pues son los que determinan el comportamiento del agente, no el notebook completo. \newline
+
+\subsubsection{Entorno}
+
+El notebook corre en un runtime de Colab solo con CPU. Los modelos son ensambles de árboles sobre unas veinte mil URLs y unas decenas de variables, así que no se necesita GPU. La primera celda instala con pip las librerías que Colab no trae, fija las semillas (random\_state=42 en todos los modelos y particiones) e imprime las versiones usadas, que se guardan en un requirements.txt en Drive Tabla~\ref{tab:librerias}. Registrar las versiones tiene una razón práctica, Colab actualiza sus librerías preinstaladas con el tiempo, y un modelo guardado con una versión puede fallar al cargarse con otra. Los recursos del runtime (CPU, RAM y disco) y el tiempo de cada etapa se registran con psutil y \%\%time, y se reportan junto con los resultados, porque Colab no garantiza los mismos recursos en cada sesión. \newline
+
+\begin{table}[ht]
+\caption{Librerías usadas en el notebook.}
+\label{tab:librerias}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{2.3cm} p{4.4cm} p{1.4cm}}
+\hline
+\textbf{Librería} & \textbf{Uso} & \textbf{Versión}\\
+\hline
+Python & Lenguaje del notebook & \textit{3.13.16}\\
+pandas, numpy & Manejo de datos & \textit{2.2.3}\\
+scikit-learn & Random Forest, \texttt{StackingClassifier}, \texttt{GroupKFold}, métricas & \textit{1.6.1}\\
+xgboost & XGBoost en la capa 1 y como meta-clasificador & \textit{3.4.1}\\
+lightgbm & Importancia de variables & \textit{4.6.0}\\
+shap & Explicaciones por característica & \textit{0.54.1}\\
+requests & Descarga HTTP & \textit{2.32.4}\\
+beautifulsoup4 & Análisis del HTML & \textit{4.13.5}\\
+python-whois & Antigüedad del dominio & \textit{0.9.6}\\
+tldextract & Dominio registrable para agrupar las particiones & \textit{5.4.0}\\
+joblib & Persistencia del modelo & \textit{1.6.0}\\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{Mapeo entre el diseño y el notebook}
+
+El notebook se organiza en secciones que siguen el orden del diseño Tabla~\ref{tab:mapeo}. Las secciones 1 a 6 se ejecutan una sola vez para entrenar y guardar los artefactos. Las secciones 7 y 8 se pueden ejecutar solas en una sesión nueva, después de cargar esos artefactos desde Drive, y es lo que hace utilizable al agente sin reentrenar. Como cada clase se define una vez, el código de extracción que construye el dataset es el mismo que se ejecuta sobre una URL nueva, que era el objetivo del diseño. \newline
+
+\begin{table*}[ht]
+\caption{Correspondencia entre los módulos del diseño y las secciones del notebook.}
+\label{tab:mapeo}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{4.2cm} p{4.2cm} p{7.4cm}}
+\hline
+\textbf{Sección del notebook} & \textbf{Módulo del diseño} & \textbf{Función principal}\\
+\hline
+0. Configuración & Soporte & Instalar librerías, fijar semillas, montar Drive\\
+1. Dataset & Entrenamiento & \texttt{build\_dataset()}: recolectar, deduplicar y registrar la fecha de captura\\
+2. Adquisición & \texttt{URLFetcher} & \texttt{fetch()}, \texttt{is\_safe\_target()}\\
+3. Extracción & \texttt{FeatureExtractor} & \texttt{extract()}: rasgos de URL, dominio y HTML\\
+4. Selección & \texttt{FeatureSelector} & \texttt{fit()}, \texttt{transform()}: importancia promedio\\
+5. Modelo y validación & \texttt{StackingModel} & \texttt{fit()}, \texttt{predict\_proba()}; validación con \texttt{GroupKFold}\\
+6. Persistencia & Entrenamiento y Predicción & \texttt{save\_artifacts()}, \texttt{load\_artifacts()}\\
+7. Agente & \texttt{PhishingAgent}, \texttt{RiskReport} & \texttt{analyze()}: orquesta el análisis y arma el informe\\
+8. Explicabilidad & \texttt{Explainer} & \texttt{explain()}: contribuciones SHAP\\
+9. Pruebas de evasión & Evaluación & URLs modificadas manualmente\\
+\hline
+\end{tabular}
+\end{table*}
+
+\subsubsection{Entrenamiento y persistencia del modelo}
+
+La selección de características se implementa con tres modelos entrenados solo para medir importancia, XGBoost, LightGBM y Random Forest. Hay un detalle que cambia el resultado, XGBoost y Random Forest entregan importancias que ya suman 1, pero LightGBM, por defecto, devuelve cuántas veces se usó cada variable para dividir, es decir, conteos. Si se promedian tal cual, LightGBM domina el promedio. Por eso cada vector de importancias se normaliza antes de promediarlo. \newline
+
+El apilamiento usa StackingClassifier de scikit-learn con stack\_method="predict\_proba". Esta clase entrena el meta-clasificador con predicciones fuera de muestra de los modelos base, no con las que esos modelos hacen sobre sus propios datos de entrenamiento. Sin eso, el meta-clasificador aprendería a confiar demasiado en modelos que ya vieron esas filas. En clasificación binaria, scikit-learn le pasa al meta-clasificador solo la probabilidad de la clase positiva de cada modelo base, de modo que recibe exactamente dos entradas, como lo plantea la Metodología. El meta-clasificador es un XGBoost deliberadamente pequeño de 50 árboles, profundidad 2; estos valores son iniciales y se ajustan con la búsqueda en grilla. \newline
+
+La validación sigue la Metodología, GroupKFold de 10 particiones agrupando por dominio registrable (obtenido con tldextract), con la selección de variables y el balanceo calculados dentro de cada partición de entrenamiento. Al final se entrena el modelo con todos los datos y se guarda en Drive. \newline
+
+Los artefactos son dos archivos, el modelo (model.joblib) y un manifest.json con las variables seleccionadas en su orden, el valor centinela, las versiones de scikit-learn y XGBoost, y el hash SHA-256 del modelo. Antes de cargarlo se recalcula el hash y, si no coincide con el del manifiesto, la carga se aborta. Esto atiende el riesgo de artefactos manipulados de la Tabla~\ref{tab:seguridad}, porque joblib puede ejecutar código al deserializar. Los primeros 12 caracteres del hash son el model\_version que aparece en el informe. \newline
+
+\begin{figure*}[ht]
+\begin{lstlisting}
+def mean_importance(X, y, seed=42):
+    modelos = [XGBClassifier(n_estimators=200, random_state=seed),
+               LGBMClassifier(n_estimators=200, random_state=seed,
+                              verbose=-1),
+               RandomForestClassifier(n_estimators=200,
+                                      random_state=seed, n_jobs=-1)]
+    imps = []
+    for m in modelos:
+        m.fit(X, y)
+        v = np.asarray(m.feature_importances_, dtype=float)
+        imps.append(v / v.sum())      # LightGBM entrega conteos
+    return pd.Series(np.mean(imps, axis=0),
+                     index=X.columns).sort_values(ascending=False)
+
+def build_stack(seed=42):
+    return StackingClassifier(
+        estimators=[("xgb", XGBClassifier(n_estimators=200,
+                                          random_state=seed)),
+                    ("rf", RandomForestClassifier(n_estimators=200,
+                                                  random_state=seed,
+                                                  n_jobs=-1))],
+        final_estimator=XGBClassifier(n_estimators=50, max_depth=2,
+                                      learning_rate=0.1,
+                                      random_state=seed),
+        stack_method="predict_proba", cv=5)
+
+for tr, te in GroupKFold(n_splits=10).split(X, y, dominios):
+    imp = mean_importance(X.iloc[tr], y[tr])
+    sel = list(imp.index[:K])
+    modelo = build_stack().fit(X.iloc[tr][sel], y[tr])
+    evaluar(modelo, X.iloc[te][sel], y[te])
+
+def save_artifacts(model, selected, path):
+    path = Path(path); path.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, path / "model.joblib")
+    h = hashlib.sha256((path / "model.joblib").read_bytes()).hexdigest()
+    vers = {p: md.version(p) for p in ("scikit-learn", "xgboost")}
+    (path / "manifest.json").write_text(json.dumps(
+        {"selected": selected, "sentinel": SENTINEL,
+         "sha256": h, "versions": vers}))
+
+def load_artifacts(path):
+    path = Path(path)
+    man = json.loads((path / "manifest.json").read_text())
+    h = hashlib.sha256((path / "model.joblib").read_bytes()).hexdigest()
+    if h != man["sha256"]:
+        raise ValueError("el hash del modelo no coincide")
+    return joblib.load(path / "model.joblib"), man
+\end{lstlisting}
+\caption{Selección por importancia promedio, apilamiento y persistencia con verificación de integridad.}
+\label{lst:entrenamiento}
+\end{figure*}
+
+\subsubsection{Extracción de características en tiempo de ejecución}
+
+URLFetcher descarga la página con la librería requests, y casi todo su código es para limitar lo que el sitio puede hacerle al agente. Los tiempos límite son de 3 segundos para conectar y 6 para leer, y hay además un tope total de 15 segundos, porque el límite de lectura de requests es por bloque recibido y un servidor lento que envía datos a cuentagotas podría mantener la descarga abierta indefinidamente. La respuesta se lee en streaming con tope de 2 MB, solo se acepta contenido HTML, y las redirecciones se siguen a mano (hasta 5) para poder validar cada destino antes de conectarse. Cualquier fallo (tiempo agotado, error de conexión, destino rechazado) se devuelve como un resultado con html = None y el motivo, nunca como una excepción que detenga el análisis. \newline
+
+is\_safe\_target acepta solo los esquemas http y https, resuelve el nombre de dominio y rechaza el destino si alguna de las direcciones resueltas no es pública, con la propiedad is\_global de la librería ipaddress. Esa sola comprobación cubre las IP privadas, la de loopback y las link-local, incluida 169.254.169.254. Hay un riesgo residual que el prototipo no resuelve, la resolución de DNS se hace antes de la conexión, de modo que un servidor DNS hostil podría responder distinto la segunda vez (DNS rebinding). Cerrarlo exigiría conectarse directamente a la IP ya validada, lo que complica el manejo de HTTPS y queda fuera del alcance de este trabajo. \newline
+
+La antigüedad del dominio se obtiene con python-whois y un tiempo límite de 5 segundos. La fecha de creación puede venir como una fecha, como una lista de fechas o sin zona horaria, así que se toma la más antigua y se normaliza a UTC. Si la consulta falla, por límite de consultas, por datos de registro ocultos o porque el dominio no tiene WHOIS, la función devuelve el valor centinela. WHOIS es la fuente más probable de valores faltantes. Del HTML descargado solo se conservan las características calculadas (por ejemplo, si hay un campo de contraseña y cuántos formularios tiene la página), y el HTML en sí se descarta. \newline
+
+\begin{figure*}[ht]
+\begin{lstlisting}
+def is_safe_target(url):
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(p.hostname, p.port or 443)
+    except socket.gaierror:
+        return False
+    return all(ipaddress.ip_address(i[4][0]).is_global
+               for i in infos)
+
+def fetch(url, timeout=(3, 6), max_bytes=2_000_000,
+          max_redirects=5, max_seconds=15):
+    ua = {"User-Agent": "Mozilla/5.0 (PhishRiskAgent/0.1)"}
+    limite = time.monotonic() + max_seconds
+    try:
+        for _ in range(max_redirects + 1):
+            if not is_safe_target(url):
+                return {"final_url": url, "html": None,
+                        "error": "destino no permitido"}
+            r = requests.get(url, headers=ua, timeout=timeout,
+                             stream=True, allow_redirects=False)
+            if r.is_redirect:
+                url = urljoin(url, r.headers.get("Location", ""))
+                r.close()
+                continue
+            if "html" not in r.headers.get("Content-Type", "").lower():
+                r.close()
+                return {"final_url": url, "html": None,
+                        "error": "no es HTML"}
+            datos = b""
+            for trozo in r.iter_content(8192):
+                datos += trozo
+                if len(datos) > max_bytes or time.monotonic() > limite:
+                    break
+            r.close()
+            html = datos[:max_bytes].decode(r.encoding or "utf-8",
+                                            errors="replace")
+            return {"final_url": url, "html": html, "error": None}
+        return {"final_url": url, "html": None,
+                "error": "demasiadas redirecciones"}
+    except requests.RequestException as e:
+        return {"final_url": url, "html": None, "error": type(e).__name__}
+
+def domain_age_days(domain):
+    try:
+        c = whois.whois(domain, timeout=5).creation_date
+        c = min(c) if isinstance(c, list) else c
+        if c.tzinfo is None:
+            c = c.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - c).days
+    except Exception:
+        return SENTINEL
+\end{lstlisting}
+\caption{Descarga con límites, validación del destino y antigüedad del dominio con valor centinela.}
+\label{lst:extraccion}
+\end{figure*}
+
+
+\subsubsection{Explicabilidad con SHAP}
+
+Sobre el modelo final completo, desde las variables seleccionadas hasta la probabilidad de phishing, se aplicará SHAP para generar dos tipos de explicación, una global, que muestra qué características pesan más en promedio sobre el dataset, y una local, que para una URL puntual muestra qué características empujaron la decisión hacia ``phishing'' o ``legítimo'' y en qué magnitud. Se explica el modelo completo y no solo el meta clasificador, porque este recibe únicamente las probabilidades de los dos modelos base y sus contribuciones no dirían nada sobre las características de la URL. La explicación local es la que responde directamente al objetivo de que la evaluación de riesgo venga acompañada de una justificación. \newline
+
+Para datos tabulares y con un conjunto de fondo, la librería shap elige un explicador por permutaciones, que no depende del tipo de modelo y por eso sirve para el apilamiento completo. El fondo es una muestra de unas 50 filas de entrenamiento guardada junto al modelo. Las contribuciones salen en unidades de probabilidad y suman la diferencia entre la probabilidad de la URL analizada y la probabilidad media del fondo. Un valor positivo empuja hacia phishing y uno negativo, hacia legítimo. explain devuelve las top\_k variables de mayor contribución absoluta, con su valor observado y el signo de su contribución, que es el campo factors del informe. Para la explicación global se promedian las contribuciones absolutas sobre una muestra del conjunto de validación. El costo de cada explicación crece con el número de variables y el tamaño del fondo, y se medirá en la Evaluación. \newline
+
+\begin{figure}[ht]
+\begin{lstlisting}
+class Explainer:
+    def __init__(self, model, selected, background):
+        self.sel = selected
+        f = lambda d: model.predict_proba(
+            pd.DataFrame(d, columns=selected))[:, 1]
+        self.exp = shap.Explainer(f, background[selected])
+
+    def explain(self, x, top_k=3):
+        sv = self.exp(x[self.sel]).values[0]
+        orden = np.argsort(-np.abs(sv))[:top_k]
+        return [{"feature": self.sel[i],
+                 "value": float(x[self.sel[i]].iloc[0]),
+                 "shap": float(sv[i])} for i in orden]
+\end{lstlisting}
+\caption{Explicación SHAP sobre el pipeline completo.}
+\label{lst:shap}
+\end{figure}
+
+
+\subsubsection{Limitaciones propias de Colab}
+
+Sesiones efímeras. El runtime se recicla por inactividad o por tiempo máximo de uso, y con él se pierden las variables, el disco local y las librerías instaladas. Por eso el notebook se puede ejecutar de arriba abajo, instala sus dependencias al inicio y guarda en Drive todo lo costoso de recalcular, el dataset de características y los artefactos del modelo. \newline
+
+Sin servicio persistente. Colab no permite dejar el agente encendido como una API con una dirección estable. El agente se usa de forma interactiva, llamando a analyze(url) desde el notebook. Convertirlo en un servicio (por ejemplo, una API pequeña en un servidor propio) o en una extensión de navegador queda como trabajo futuro. \newline
+
+Recursos variables. CPU, RAM y tiempo disponibles no son los mismos en cada sesión, así que los tiempos medidos son indicativos y cada medición se reporta con las condiciones del runtime en que se hizo. \newline
+
+Salida a Internet desde un centro de datos. Las peticiones salen desde direcciones de Google. Es probable que algunos sitios bloqueen esas direcciones o sirvan otro contenido a clientes automáticos, y que WHOIS limite las consultas, lo que aumenta la cantidad de características faltantes frente a un equipo doméstico. \newline
+
+Versiones de librerías. Un modelo guardado puede no cargar tras una actualización de scikit-learn o XGBoost. El manifiesto guarda las versiones usadas y requirements.txt permite reproducir el entorno; si las versiones no coinciden al cargar, conviene reentrenar. \newline

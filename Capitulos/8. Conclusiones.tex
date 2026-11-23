@@ -1,0 +1,24 @@
+\section{Conclusiones}
+
+Este trabajo construyó un agente que recibe una URL cruda y estima su riesgo de phishing sin consultar listas de sitios ya reportados, y comparó sus resultados con los de la literatura revisada. Las conclusiones siguen los tres objetivos planteados. \newline
+
+\textbf{Características asociadas al phishing:} \par 
+Las señales que más separan las dos clases son léxicas y de dominio, el uso de HTTPS, el número de subdominios, la proporción de dígitos y la longitud de la URL, de la ruta y del nombre de host, junto con la edad de registro del dominio. Estas variables concentran el 94,1\% de la importancia SHAP de las 17 que conserva el modelo, mientras que las de contenido (enlaces, scripts y formularios de inicio de sesión) aportan el 5,9\%, algo esperable cuando el 79,2\% de las URLs de phishing ya no devolvía HTML. Reducir las variables de 29 a 17 no costó exactitud medible. Dos de las más importantes, el esquema HTTPS y el conteo de subdominios, reflejan en parte cómo se construyó la clase legítima y no una propiedad general del phishing. \newline
+
+\textbf{Agente:} \par 
+Se diseñó e implementó un agente con módulos separados (adquisición, extracción, selección, predicción, explicación e informe) que corre en Google Colab y entrega un informe con etiqueta, probabilidad, nivel de riesgo, factores explicativos y variables faltantes. Como el agente descarga páginas hostiles, el diseño limita lo que el sitio puede hacerle, no ejecuta JavaScript, rechaza destinos internos, acota el tiempo y el tamaño de la descarga y verifica la integridad del modelo antes de cargarlo. Sobre 4.023 URLs apartadas alcanzó 91,23\% de exactitud, F1 de 0,912 y AUC de 0,967. El stacking de XGBoost y Random Forest con meta-clasificador XGBoost superó a XGBoost solo por 0,20 puntos, una diferencia que no se distingue del error de medición y que coincide con las ganancias pequeñas que reporta \cite{kalabarige2023boosting}. Frente a un XGBoost bien afinado, apilar no se justificó por exactitud. \newline
+
+\textbf{Utilidad para detectar, mitigar y pronosticar:} \par 
+Para detectar, el agente sirve como apoyo y no como filtro autónomo, su tasa de falsos positivos es de 7,7\% (una de cada 13 URLs legítimas queda marcada) y clasificó como phishing a \texttt{https://www.wikipedia.org/}. Para mitigar, el aporte es el informe, pues cada resultado incluye una recomendación según el nivel de riesgo y las variables que lo motivaron, calculadas con valores de Shapley, algo que los trabajos revisados en detalle no ofrecen. Un análisis completo tarda 2,83 s en promedio, de los cuales 1,25 s corresponden a la explicación. Las recomendaciones son textos fijos y no se probaron con usuarios. Para pronosticar, el agente estima la probabilidad de que una URL desconocida sea phishing, pero no se midió su desempeño con sitios que aparecen después del entrenamiento, porque todas las URLs se capturaron el mismo día. Las pruebas de evasión fueron simples y no adaptativas, y la única que quita señales sospechosas (forzar HTTPS) bajó la detección a 95,4\%. \newline
+
+\textbf{Alcance y trabajo futuro:} \par 
+Las cifras no son comparables de forma directa con las de los trabajos que usan datasets públicos (96 a 99\%); se parecen más a las de quienes construyen su dataset con fuentes activas (92 a 95\%) \cite{duy2024study}. La exactitud probablemente está sobrestimada por los artefactos del dataset, y el agente solo analiza URLs públicas, las rutas protegidas y las direcciones internas se rechazan por seguridad. Como trabajo futuro, en orden de prioridad, se propone: 
+\begin{itemize}
+    \item Corregir los artefactos (no contar \texttt{www} como subdominio y muestrear el esquema de las legítimas según su frecuencia real) y reentrenar.
+    \item Medir el efecto de igualar los valores faltantes y calcular la curva ROC para ajustar el umbral y reducir los falsos positivos.
+    \item Evaluar con una partición temporal y con ataques adaptativos, incluida la defensa por reentrenamiento adversario de \cite{duy2024study}.
+    \item Darle más peso al contenido de la página con una rama de análisis de HTML.
+    \item Empaquetar el agente como servicio o extensión de navegador.
+\end{itemize}
+
+En conjunto, los resultados sugieren que un agente explicable de riesgo de phishing basado en la URL es viable con herramientas abiertas, y que su confiabilidad depende más de cómo se construyen los datos que del algoritmo elegido.

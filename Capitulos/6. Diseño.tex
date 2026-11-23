@@ -1,0 +1,273 @@
+\section{DISEÑO E IMPLEMENTACIÓN}
+
+La Metodología describe qué modelo se entrena y con qué datos. Esta sección describe cómo se construye, alrededor de ese modelo, un sistema que alguien pueda usar, algo que reciba una URL cualquiera y devuelva un veredicto con su justificación. Un clasificador con buena exactitud sobre un archivo de datos todavía no es un agente, ya que aún falta la parte que descarga la página sin ponerse en riesgo, calcula las mismas características que se usaron al entrenar, aplica el modelo y presenta el resultado de forma legible. \newline
+
+Esta sección tiene dos partes, en el Diseño se define el sistema de manera casi independiente de la herramienta, con sus componentes, clases, el recorrido de una URL, el formato de la respuesta y las medidas de seguridad. En este apartado se usan tres diagramas UML (componentes, clases y secuencia) porque cada uno responde una pregunta distinta, que ayuda a comprender mejor el modelo, qué piezas hay y dónde corren, cómo se reparten las responsabilidades y en qué orden se comunican. En Implementación se describe cómo se materializa ese diseño en Google Colab, Colab condiciona el diseño en un punto, pues no ofrece un servicio permanente, y cada sesión es una máquina virtual efímera. Por eso el agente se plantea como una función que se invoca desde el notebook, y todo lo que debe sobrevivir entre sesiones (dataset, modelo entrenado, lista de variables seleccionadas) se guarda en Google Drive y se carga al iniciar.
+
+\subsection{Diseño}
+
+\subsubsection{Arquitectura General} 
+
+La FiguraFigura~\ref{fig:componentes} muestra el sistema como un conjunto de componentes que corren dentro de un único entorno, el runtime de Google Colab. El camino principal tiene cinco componentes, la interfaz del agente recibe la URL del usuario, la adquisición descarga el HTML y consulta WHOIS, la extracción convierte lo descargado en un vector de características, la predicción selecciona las variables relevantes y calcula la probabilidad de phishing, y la explicación e informe genera las contribuciones SHAP y arma la respuesta. Las flechas continuas son el flujo de datos de ese camino, y las discontinuas indican que un componente usa un recurso externo. \newline
+
+El diseño separa a propósito la adquisición de la extracción. Solo el componente de adquisición toca la red y el contenido no confiable del sitio. Todo lo demás trabaja con datos ya descargados, lo que concentra en un solo lugar el riesgo de analizar páginas sospechosas. \newline
+
+Hay también un componente de entrenamiento que corre fuera de línea. Reutiliza el mismo componente de extracción que el camino principal, de modo que las características calculadas al entrenar y al predecir salen del mismo código, y evita el desajuste entre ambos. Lee el dataset desde Google Drive y escribe allí los artefactos del modelo, que el componente de predicción carga al iniciar. Drive se dibuja fuera de la frontera de Colab porque es almacenamiento persistente, independiente de la máquina virtual efímera.
+\newline
+
+
+\begin{figure*}[ht]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\footnotesize,
+    comp/.style={rectangle, rounded corners=3pt, draw, thick, text width=2.4cm, align=center, minimum height=1.5cm, inner sep=4pt},
+    ext/.style={rectangle, rounded corners=3pt, draw, thick, text width=2.2cm, align=center, minimum height=1.0cm, inner sep=4pt, fill=gray!12, draw=gray!60!black},
+    verde/.style={comp, fill=teal!10, draw=teal!70!black},
+    lila/.style={comp, fill=violet!10, draw=violet!70!black},
+    naranja/.style={comp, fill=orange!12, draw=orange!70!black},
+    gris/.style={comp, fill=gray!12, draw=gray!60!black},
+    flecha/.style={-{Latex[length=2mm]}, thick},
+    dep/.style={-{Latex[length=2mm]}, thick, dashed},
+    et/.style={font=\scriptsize\itshape, inner sep=1.5pt}
+]
+
+    % Nodos Principales
+    \node[ext] (user) at (-0.6,0) {\textbf{Usuario}\\ analista};
+    \node[gris] (c1) at (3.6,0) {\textbf{Interfaz del agente}\\ {\scriptsize PhishingAgent}};
+    \node[verde] (c2) at (7.2,0) {\textbf{Adquisición}\\ {\scriptsize URLFetcher}};
+    \node[verde] (c3) at (10.8,0) {\textbf{Extracción}\\ {\scriptsize FeatureExtractor}};
+    \node[lila] (c4) at (14.4,0) {\textbf{Predicción}\\ {\scriptsize FeatureSelector + StackingModel}};
+    \node[lila] (c5) at (18.0,0) {\textbf{Explicación e informe}\\ {\scriptsize Explainer + RiskReport}};
+    \node[naranja] (tr) at (10.8,-3.0) {\textbf{Entrenamiento}\\ {\scriptsize fit() fuera de línea}};
+    \node (topspace) at (10.8,1.5) {};
+
+    % Caja del Entorno Google Colab
+    \begin{scope}[on background layer]
+        \node[draw, dashed, thick, rounded corners=6pt, fill=gray!4, inner sep=10pt, fit=(c1)(c2)(c3)(c4)(c5)(tr)(topspace)] (colab) {};
+    \end{scope}
+    \node[font=\small\bfseries, anchor=north west] at ([xshift=10pt,yshift=-4pt]colab.north west) {Google Colab};
+
+    % Recursos Externos
+    \node[ext] (sitio) at (5.9,-5.4) {\textbf{Sitio objetivo}\\ HTTP(S)};
+    \node[ext] (whois) at (8.6,-5.4) {\textbf{WHOIS / DNS}\\ servicio externo};
+    \node[ext] (drive) at (14.4,-5.4) {\textbf{Google Drive}\\ dataset y artefactos};
+
+    % Conexiones y Flujos de Datos
+    \draw[flecha] (user) -- node[above, et]{URL} (c1);
+    \draw[flecha] (c1) -- node[above, et]{URL} (c2);
+    \draw[flecha] (c2) -- node[above, et]{página} (c3);
+    \draw[flecha] (c3) -- node[above, et]{vector} (c4);
+    \draw[flecha] (c4) -- node[above, et]{prob.} (c5);
+
+    % Dependencias e Interacciones
+    \coordinate (a1) at ($(c2.south)+(-0.5,0)$);
+    \coordinate (a2) at ($(c2.south)+(0.5,0)$);
+    \draw[dep] (a1) -- node[left, et]{GET} (a1 |- sitio.north);
+    \draw[dep] (a2) -- node[right, et]{consulta} (a2 |- whois.north);
+    \draw[dep] (tr.north) -- node[right, et]{reutiliza} (c3.south);
+    \draw[flecha, <->] (tr.south) |- node[pos=0.25, left, et, align=right]{dataset /\\ artefactos} (drive.west);
+    \draw[dep] (drive.north) -- node[right, et]{carga modelo} (c4.south);
+    \draw[flecha] (c5.north) -- ++(0,1.9) -| node[pos=0.25, above, et]{RiskReport} (user.north);
+
+\end{tikzpicture}}
+\caption{Diagrama de componentes del agente. Las flechas continuas indican flujo de datos y las discontinuas, uso de un recurso externo o reutilización.}
+\label{fig:componentes}
+\end{figure*}
+
+\subsubsection{Diseño de módulos}
+
+La Figura~\ref{fig:clases} baja cada componente a clases concretas. PhishingAgent es el orquestador que posee una instancia de cada una de las otras cinco clases y expone un único método público, analyze(url), que devuelve un RiskReport. Su método privado validate\_url rechaza entradas inválidas antes de tocar la red, y el atributo risk\_thresholds guarda los umbrales que convierten la probabilidad en un nivel de riesgo. \newline
+
+Cada una de las otras clases tiene una sola responsabilidad, URLFetcher descarga la página con límites de tiempo, tamaño y redirecciones, y verifica con is\_safe\_target que el destino sea aceptable. FeatureExtractor calcula las variables léxicas, de dominio y de HTML, y codifica con un valor centinela las que no pueden calcularse. FeatureSelector conserva las K variables de mayor importancia promedio. StackingModel encapsula las dos capas de XGBoost y Random Forest como base y un segundo XGBoost como meta-clasificador. Explainer calcula las contribuciones SHAP, y por eso depende de StackingModel. FeatureSelector y StackingModel tienen tanto fit como transform o predict\_proba, así que las mismas clases sirven para entrenar y para predecir. La página descargada y el vector de características se manejan como diccionarios simples y no como clases propias, para no inflar el diseño.
+\newline
+
+
+\begin{figure*}[ht]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\scriptsize,
+    clase/.style={rectangle split, rectangle split parts=3, draw, thick,
+                  text width=3.2cm, align=left, inner xsep=4pt, inner ysep=4pt,
+                  rectangle split part fill={gray!18, white, white}},
+    comp/.style={-{diamond[length=3.5mm, width=2.5mm]}, thick},
+    uso/.style={-{Latex[length=2mm]}, thick, dashed},
+    et/.style={font=\scriptsize\itshape, inner sep=2pt}
+]
+
+\node[clase] (agent) at (6.8,0)
+  {\nodepart{one}\centering\textbf{PhishingAgent}
+   \nodepart{two}- risk\_thresholds: dict
+   \nodepart{three}+ analyze(url)\\- validate\_url(url)};
+
+\node[clase] (report) at (13.6,0)
+  {\nodepart{one}\centering\textbf{RiskReport}
+   \nodepart{two}+ url, final\_url: str\\+ label: str\\+ probability: float\\+ risk\_level: str\\+ recommendation: str\\+ factors: list\\+ missing\_features: list\\+ model\_version: str
+   \nodepart{three}+ to\_dict(): dict};
+
+\node[clase] (fetch) at (0,-4.5)
+  {\nodepart{one}\centering\textbf{URLFetcher}
+   \nodepart{two}- timeout: float\\- max\_bytes: int\\- max\_redirects: int
+   \nodepart{three}+ fetch(url): dict\\- is\_safe\_target(url)};
+
+\node[clase] (extr) at (3.4,-4.5)
+  {\nodepart{one}\centering\textbf{FeatureExtractor}
+   \nodepart{two}- lexical\_features: list\\- html\_features: list\\- sentinel: int
+   \nodepart{three}+ extract(url, page)};
+
+\node[clase] (sel) at (6.8,-4.5)
+  {\nodepart{one}\centering\textbf{FeatureSelector}
+   \nodepart{two}- importances: dict\\- selected: list
+   \nodepart{three}+ fit(X, y)\\+ transform(x)};
+
+\node[clase] (model) at (10.2,-4.5)
+  {\nodepart{one}\centering\textbf{StackingModel}
+   \nodepart{two}- base\_xgb: XGB\\- base\_rf: RF\\- meta: XGB
+   \nodepart{three}+ fit(X, y)\\+ predict\_proba(x)};
+
+\node[clase] (expl) at (13.6,-4.5)
+  {\nodepart{one}\centering\textbf{Explainer}
+   \nodepart{two}- shap\_explainer: object
+   \nodepart{three}+ explain(x, top\_k)};
+
+\coordinate (busY) at ($(agent.south)+(0,-1.0)$);
+
+\draw[comp] (busY) -- (agent.south);
+
+\draw[thick] (busY -| fetch.north) -- (busY -| expl.north);
+
+\draw[thick] (busY -| fetch.north) -- (fetch.north);
+\draw[thick] (busY -| extr.north) -- (extr.north);
+\draw[thick] (busY -| sel.north) -- (sel.north);
+\draw[thick] (busY -| model.north) -- (model.north);
+\draw[thick] (busY -| expl.north) -- (expl.north);
+
+\draw[uso] (agent.east) -- node[above, et]{«crea»} (report.west);
+\draw[uso] (expl.north) .. controls +(up:1.2cm) and +(right:1.2cm) .. node[above right, et]{«usa»} (model.north east);
+
+\end{tikzpicture}}
+\caption{Diagrama de clases del agente. El rombo indica que \texttt{PhishingAgent} compone las cinco clases inferiores.}
+\label{fig:clases}
+\end{figure*}
+
+
+
+\subsubsection{Flujo de datos para una URL}
+
+La Figura~\ref{fig:secuencia} sigue una sola URL de principio a fin. El usuario llama a analyze(url) y lo primero que ocurre es una validación local (validate\_url), sin red. Después el agente pide la página a URLFetcher, que antes de conectarse comprueba el destino con is\_safe\_target, y recibe de vuelta el HTML o None si el sitio no responde. Con eso, FeatureExtractor calcula el vector de características, FeatureSelector lo reduce a las variables elegidas, StackingModel devuelve la probabilidad de phishing y Explainer devuelve los factores que más pesaron. Al final el agente arma el RiskReport y se lo entrega al usuario. \newline
+
+Dos detalles del diagrama importan, el primero es que el agente es el único que habla con todos, los módulos no se llaman entre sí, lo que mantiene el flujo lineal y fácil de seguir. El segundo es el recuadro de la nota, pues si el sitio está caído, el análisis no se aborta sino que las características de HTML y WHOIS quedan con el valor centinela y la predicción se hace solo con lo que se conoce de la URL. Esas variables se listan después en el informe como faltantes. Si validate\_url falla (esquema no permitido, URL demasiado larga), el agente responde con un error sin haber tocado la red, caso que el diagrama no dibuja. El flujo es síncrono, se espera que el mayor tiempo lo consuman la descarga y WHOIS y no los modelos, algo que se medirá en la Evaluación.
+\newline
+
+
+\begin{figure*}[ht]
+\centering
+\resizebox{0.9\textwidth}{!}{%
+\begin{tikzpicture}[
+    font=\scriptsize,
+    vida/.style={rectangle, draw, thick, fill=gray!14, minimum width=2.3cm, minimum height=0.7cm, align=center, inner sep=3pt},
+    linea/.style={dashed, gray!70!black, thick},
+    msg/.style={-{Latex[length=2mm]}, thick},
+    ret/.style={-{Latex[length=2mm]}, thick, dashed},
+    et/.style={font=\scriptsize, inner sep=1.5pt},
+    etw/.style={font=\scriptsize, inner sep=1pt, fill=white, anchor=west},
+    act/.style={rectangle, draw, fill=white, thick, minimum width=0.18cm}
+]
+\def\dx{2.7}
+\node[vida] (u)  at (0*\dx,0) {Usuario};
+\node[vida] (a)  at (1*\dx,0) {\textbf{PhishingAgent}};
+\node[vida] (f)  at (2*\dx,0) {URLFetcher};
+\node[vida] (e)  at (3*\dx,0) {FeatureExtractor};
+\node[vida] (s)  at (4*\dx,0) {FeatureSelector};
+\node[vida] (m)  at (5*\dx,0) {StackingModel};
+\node[vida] (x)  at (6*\dx,0) {Explainer};
+
+\foreach \n in {u,a,f,e,s,m,x}{
+  \draw[linea] (\n.south) -- (\n.south |- 0,-12.3);
+}
+
+\node[act, minimum height=10.95cm, anchor=north] at (a |- 0,-0.95) {};
+
+\draw[msg] (u |- 0,-1.1) -- node[above, et]{analyze(url)} (a |- 0,-1.1);
+\draw[msg] (a |- 0,-1.8) -- ++(0.7,0) -- ++(0,-0.35) -- ++(-0.7,0);
+\node[etw] at ([xshift=0.78cm]a |- 0,-1.975) {validate\_url(url)};
+\draw[msg] (a |- 0,-2.9) -- node[above, et]{fetch(url)} (f |- 0,-2.9);
+\draw[msg] (f |- 0,-3.6) -- ++(0.7,0) -- ++(0,-0.35) -- ++(-0.7,0);
+\node[etw] at ([xshift=0.78cm]f |- 0,-3.775) {is\_safe\_target(url)};
+\draw[ret] (f |- 0,-4.65) -- node[above, et]{page | None} (a |- 0,-4.65);
+\node[draw, dashed, fill=gray!8, align=left, font=\tiny, inner sep=3pt, anchor=north west]
+   at ([xshift=0.15cm]f |- 0,-4.85) {si el sitio no responde: page = None\\ y se usa el valor centinela};
+\draw[msg] (a |- 0,-6.2) -- node[above, et]{extract(url, page)} (e |- 0,-6.2);
+\draw[ret] (e |- 0,-6.9) -- node[above, et]{features} (a |- 0,-6.9);
+\draw[msg] (a |- 0,-7.6) -- node[above, et]{transform(features)} (s |- 0,-7.6);
+\draw[ret] (s |- 0,-8.3) -- node[above, et]{x\_sel} (a |- 0,-8.3);
+\draw[msg] (a |- 0,-9.0) -- node[above, et]{predict\_proba(x\_sel)} (m |- 0,-9.0);
+\draw[ret] (m |- 0,-9.7) -- node[above, et]{p\_phishing} (a |- 0,-9.7);
+\draw[msg] (a |- 0,-10.4) -- node[above, et]{explain(x\_sel)} (x |- 0,-10.4);
+\draw[ret] (x |- 0,-11.1) -- node[above, et]{factors} (a |- 0,-11.1);
+\draw[ret] (a |- 0,-11.8) -- node[above, et]{RiskReport} (u |- 0,-11.8);
+\end{tikzpicture}}
+\caption{Diagrama de secuencia del análisis de una URL. Las flechas continuas son llamadas y las discontinuas, respuestas.}
+\label{fig:secuencia}
+\end{figure*}
+
+
+\subsubsection{Contrato de salida}
+
+El agente siempre devuelve un RiskReport con los campos de la Tabla~\ref{tab:informe}, sin importar si el sitio estaba accesible o no. La etiqueta binaria sola le sirve poco a quien la recibe, así que el informe agrega la probabilidad, un nivel de riesgo legible, los factores que explican la decisión y una recomendación de mitigación asociada al nivel.\newline
+
+El nivel de riesgo sale de aplicar umbrales a la probabilidad, se propone empezar con bajo por debajo de 0.30, medio entre 0.30 y 0.70, y alto por encima de 0.70, y ajustar esos valores con los datos de validación. Los umbrales hay que ajustarlos porque las probabilidades de XGBoost no están necesariamente calibradas, y un 0.93 no equivale a un 93\% de certeza real. La recomendación es un texto fijo por nivel, en riesgo alto, no ingresar credenciales ni datos personales, en medio, verificar el dominio por otra vía antes de interactuar, en bajo, que no se encontraron indicios fuertes, aclarando que eso no garantiza que el sitio sea seguro. Los campos missing\_features y factors hacen que el informe sea honesto con su propia incertidumbre, quien lo lee puede ver cuándo la predicción se hizo sin HTML.\newline
+
+\begin{table}[ht]
+\caption{Campos del informe de riesgo (\texttt{RiskReport}).}
+\label{tab:informe}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{2.4cm} p{5.5cm}}
+\hline
+\textbf{Campo} & \textbf{Contenido}\\
+\hline
+\texttt{url} & URL recibida, con los valores de los parámetros de consulta enmascarados\\
+\texttt{final\_url} & URL final tras seguir las redirecciones\\
+\texttt{label} & \texttt{phishing} o \texttt{legitimo}\\
+\texttt{probability} & Probabilidad de phishing (0 a 1) del meta-clasificador\\
+\texttt{risk\_level} & \texttt{bajo}, \texttt{medio} o \texttt{alto}, según umbrales sobre la probabilidad\\
+\texttt{recommendation} & Texto de mitigación asociado al nivel de riesgo\\
+\texttt{factors} & Las $k$ características con mayor contribución SHAP: nombre, valor observado y contribución con signo\\
+\texttt{missing\_features} & Características que no pudieron calcularse (HTML o WHOIS no disponibles)\\
+\texttt{model\_version} & Hash SHA-256 del artefacto del modelo usado\\
+\hline
+\end{tabular}
+\end{table}
+
+
+\subsubsection{Consideraciones de seguridad al analizar sitios sospechosos}
+
+Analizar un sitio de phishing implica acercarse a algo hecho para hacer daño, y el propio agente es un blanco posible. Por eso el diseño asume que todo lo que viene de la red es no confiable y limita lo que el agente puede hacer con ello. La Tabla~\ref{tab:seguridad} resume los siete riesgos considerados y la medida que se toma contra cada uno. \newline
+
+La decisión más importante es no ejecutar nada del sitio, no se usa un navegador, solo se descarga el HTML y se lo trata como texto. Esto tiene un costo, y es que el agente no ve contenido generado por JavaScript. Se acepta porque ejecutar páginas hostiles es justo lo que se quiere evitar. La otra medida es la validación del destino. Como el sistema corre en una máquina virtual en la nube, un atacante podría intentar que el agente consulte direcciones internas, como la del servidor de metadatos que suelen exponer esas máquinas. Por eso se rechazan IP privadas, de loopback y link-local, y la comprobación se repite en cada redirección, no solo en la URL inicial. \newline
+
+El último riesgo de la tabla es el único que el diseño no puede resolver, el cloaking. Algunos sitios de phishing muestran contenido distinto a los clientes automáticos, de modo que un HTML sin formulario de login no prueba que el sitio sea legítimo. El modelo se apoya también en señales de la URL y del dominio, y el informe reporta qué características faltaron, pero esta limitación se discutirá de nuevo en la Evaluación.\newline
+
+\begin{table}[ht]
+\caption{Riesgos al analizar sitios sospechosos y medidas de diseño.}
+\label{tab:seguridad}
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{2.4cm} p{5.5cm}}
+\hline
+\textbf{Riesgo} & \textbf{Medida}\\
+\hline
+Ejecutar código del sitio & Solo se descarga el HTML por HTTP y se analiza como texto; no se renderiza la página ni se ejecuta JavaScript\\
+Acceso a recursos internos (SSRF) & Solo esquemas \texttt{http} y \texttt{https}; se resuelve el dominio y se rechazan IP privadas, de loopback y link-local (incluida 169.254.169.254); la validación se repite en cada redirección\\
+Respuestas lentas o enormes & Tiempos límite de conexión y lectura, tope de bytes por descarga, máximo de redirecciones y longitud máxima de URL\\
+Interacción con formularios & El agente solo lee los formularios: no los rellena ni los envía, y no manda cookies ni credenciales\\
+Artefactos manipulados & El modelo se carga con \texttt{joblib}, que puede ejecutar código al deserializar; solo se cargan artefactos propios y se verifica su hash SHA-256 antes\\
+Datos sensibles en la URL & Los parámetros de consulta se enmascaran en el informe y en los registros; WHOIS y DNS se consultan solo con el dominio\\
+Cloaking & Un sitio puede mostrar otro contenido a clientes automáticos; la ausencia de un formulario no se toma como evidencia de legitimidad y las características faltantes se reportan\\
+\hline
+\end{tabular}
+\end{table}
